@@ -1,11 +1,7 @@
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, IsolationForest
 from sklearn.datasets import load_breast_cancer, load_diabetes
-from statsmodels.stats.multitest import multipletests
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.cluster import KMeans
 from sklearn.inspection import permutation_importance
-from scipy.sparse import issparse
 from scipy.stats import ks_2samp
 # Provide backward compatibility for SciPy >=1.10
 try:
@@ -17,17 +13,15 @@ except ImportError:  # SciPy >= 1.10
         return _binomtest(x, n=n, p=p, alternative=alternative).pvalue
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
-import random
 import pandas as pd
 import numpy as np
 from numpy.random import choice
 import seaborn as sns
 import shap
-import os
-import re
-
-import warnings
-warnings.filterwarnings("ignore")
+import inspect
+from collections import defaultdict
+# import warnings
+# warnings.filterwarnings("ignore")
 
 
 class BorutaShap:
@@ -48,7 +42,7 @@ class BorutaShap:
             be returned.
 
         importance_measure: String
-            Which importance measure too use either Shap or Gini/Gain
+            Which importance measure to use: "shap", "perm" or "gini"
 
         classification: Boolean
             if true then the problem is either a binary or multiclass problem otherwise if false then it is regression
@@ -65,6 +59,7 @@ class BorutaShap:
         """
 
         self.importance_measure = importance_measure
+        self.importance_measure_lower = str(importance_measure).lower()
         self.percentile = percentile
         self.pvalue = pvalue
         self.classification = classification
@@ -163,7 +158,7 @@ class BorutaShap:
         for key, sub_params in nested_params.items():
             valid_params[key].set_params(**sub_params)
 
-        return 
+        return self
 
 
     def check_model(self):
@@ -204,7 +199,7 @@ class BorutaShap:
         elif check_fit is False and check_predict_proba is False:
             raise AttributeError('Model must contain both the fit() and predict() methods')
 
-        elif check_feature_importance is False and self.importance_measure == 'gini':
+        elif check_feature_importance is False and self.importance_measure_lower == 'gini':
             raise AttributeError('Model must contain the feature_importances_ method to use Gini try Shap instead')
 
         else:
@@ -519,9 +514,9 @@ class BorutaShap:
 
         """
 
-        self.history_shadow = np.zeros(self.ncols)
-        self.history_x = np.zeros(self.ncols)
-        self.history_hits = np.zeros(self.ncols)
+        self.history_shadow = np.empty((0, self.ncols))
+        self.history_x      = np.empty((0, self.ncols))
+        self.history_hits   = np.zeros(self.ncols)
 
 
     def update_importance_history(self):
@@ -535,16 +530,16 @@ class BorutaShap:
 
         """
 
-        padded_history_shadow  = np.full((self.ncols), np.NaN)
-        padded_history_x = np.full((self.ncols), np.NaN)
+        row_shadow = np.full(self.ncols, np.nan)
+        row_x = np.full(self.ncols, np.nan)
 
-        for (index, col) in enumerate(self.columns):
+        for index, col in enumerate(self.columns):
             map_index = self.order[col]
-            padded_history_shadow[map_index] = self.Shadow_feature_import[index]
-            padded_history_x[map_index] = self.X_feature_import[index]
+            row_shadow[map_index] = float(np.ravel(self.Shadow_feature_import[index])[0])
+            row_x[map_index] = float(np.ravel(self.X_feature_import[index])[0])
 
-        self.history_shadow = np.vstack((self.history_shadow, padded_history_shadow))
-        self.history_x = np.vstack((self.history_x, padded_history_x))
+        self.history_shadow = np.vstack((self.history_shadow, row_shadow))
+        self.history_x = np.vstack((self.history_x, row_x))
 
 
 
@@ -564,8 +559,8 @@ class BorutaShap:
                                  columns=self.all_columns)
 
 
-        self.history_x['Max_Shadow']    =  [max(i) for i in self.history_shadow]
-        self.history_x['Min_Shadow']    =  [min(i) for i in self.history_shadow]
+        self.history_x['Max_Shadow']    =  [np.nanmax(i) for i in self.history_shadow]
+        self.history_x['Min_Shadow']    =  [np.nanmin(i) for i in self.history_shadow]
         self.history_x['Mean_Shadow']   =  [np.nanmean(i) for i in self.history_shadow]
         self.history_x['Median_Shadow'] =  [np.nanmedian(i) for i in self.history_shadow]
 
@@ -586,9 +581,9 @@ class BorutaShap:
 
         """
 
-        features = pd.DataFrame(data={'Features':self.history_x.iloc[1:].columns.values,
-        'Average Feature Importance':self.history_x.iloc[1:].mean(axis=0).values,
-        'Standard Deviation Importance':self.history_x.iloc[1:].std(axis=0).values})
+        features = pd.DataFrame(data={'Features': self.history_x.columns.values,
+        'Average Feature Importance': self.history_x.mean(axis=0).values,
+        'Standard Deviation Importance': self.history_x.std(axis=0).values})
 
         decision_mapper = self.create_mapping_of_features_to_attribute(maps=['Tentative','Rejected','Accepted', 'Shadow'])
         features['Decision'] = features['Features'].map(decision_mapper)
@@ -692,8 +687,10 @@ class BorutaShap:
             normalised array
         """
         mean_value = np.mean(array)
-        std_value  = np.std(array)
-        return [(element-mean_value)/std_value for element in array]
+        std_value = np.std(array)
+        if std_value == 0:
+            return np.zeros_like(array, dtype=float)
+        return (array - mean_value) / std_value
 
 
     def feature_importance(self, normalize):
@@ -718,7 +715,7 @@ class BorutaShap:
                 If no Importance measure was specified
         """
 
-        if self.importance_measure == 'shap':
+        if self.importance_measure_lower == 'shap':
 
             self.explain()
             vals = self.shap_values
@@ -729,11 +726,23 @@ class BorutaShap:
             X_feature_import = vals[:len(self.X.columns)]
             Shadow_feature_import = vals[len(self.X_shadow.columns):]
             
-        elif self.importance_measure == 'perm':
-            
-            # set default scoring as f1, can be changed to an argument for customizability
-            perm_importances_ =  permutation_importance(self.model, self.X, self.y, scoring='f1')
-            perm_importances_ = perm_importance.importances_mean
+        elif self.importance_measure_lower == 'perm':
+
+            if self.classification:
+                num_classes = np.unique(self.y).size
+                scoring = 'f1' if num_classes == 2 else 'f1_macro'
+            else:
+                scoring = 'neg_root_mean_squared_error'
+
+            perm_result = permutation_importance(
+                self.model,
+                self.X_boruta,
+                self.y,
+                scoring=scoring,
+                n_repeats=10,
+                random_state=self.random_state
+            )
+            perm_importances_ = perm_result.importances_mean
 
             if normalize:
                 perm_importances_ = self.calculate_Zscore(perm_importances_)
@@ -741,7 +750,7 @@ class BorutaShap:
             X_feature_import = perm_importances_[:len(self.X.columns)]
             Shadow_feature_import = perm_importances_[len(self.X.columns):]
 
-        elif self.importance_measure == 'gini':
+        elif self.importance_measure_lower == 'gini':
 
                 feature_importances_ =  np.abs(self.model.feature_importances_)
 
@@ -826,60 +835,24 @@ class BorutaShap:
         """
 
 
-        explainer = shap.TreeExplainer(self.model, 
-                                       feature_perturbation = "tree_path_dependent",
-                                       approximate = True)
+        explainer = shap.TreeExplainer(
+            self.model,
+            feature_perturbation="tree_path_dependent",
+            approximate=True,
+        )
 
+        data_to_explain = self.find_sample() if self.sample else self.X_boruta
 
-        if self.sample:
-
-
-            if self.classification:
-                # for some reason shap returns values wraped in a list of length 1
-
-                self.shap_values = np.array(explainer.shap_values(self.find_sample()))
-                if isinstance(self.shap_values, list):
-
-                    class_inds = range(len(self.shap_values))
-                    shap_imp = np.zeros(self.shap_values[0].shape[1])
-                    for i, ind in enumerate(class_inds):
-                        shap_imp += np.abs(self.shap_values[ind]).mean(0)
-                    self.shap_values /= len(self.shap_values)
-
-                elif len(self.shap_values.shape) == 3:
-                    self.shap_values = np.abs(self.shap_values).sum(axis=0)
-                    self.shap_values = self.shap_values.mean(0)
-
-                else:
-                    self.shap_values = np.abs(self.shap_values).mean(0)
-
-            else:
-                self.shap_values = explainer.shap_values(self.find_sample())
-                self.shap_values = np.abs(self.shap_values).mean(0)
-
+        if self.classification:
+            raw_vals = explainer.shap_values(data_to_explain)
+            if isinstance(raw_vals, list):
+                self.shap_values = np.mean([np.abs(v) for v in raw_vals], axis=0).mean(axis=0)
+            else:  # ndarray for newer shap versions
+                self.shap_values = np.abs(raw_vals).mean(axis=0)
+                if self.shap_values.ndim > 1:
+                    self.shap_values = self.shap_values.mean(axis=-1)
         else:
-
-            if self.classification:
-                # for some reason shap returns values wraped in a list of length 1
-                self.shap_values = np.array(explainer.shap_values(self.X_boruta))
-                if isinstance(self.shap_values, list):
-
-                    class_inds = range(len(self.shap_values))
-                    shap_imp = np.zeros(self.shap_values[0].shape[1])
-                    for i, ind in enumerate(class_inds):
-                        shap_imp += np.abs(self.shap_values[ind]).mean(0)
-                    self.shap_values /= len(self.shap_values)
-
-                elif len(self.shap_values.shape) == 3:
-                    self.shap_values = np.abs(self.shap_values).sum(axis=0)
-                    self.shap_values = self.shap_values.mean(0)
-
-                else:
-                    self.shap_values = np.abs(self.shap_values).mean(0)
-
-            else:
-                self.shap_values = explainer.shap_values(self.X_boruta)
-                self.shap_values = np.abs(self.shap_values).mean(0)
+            self.shap_values = np.abs(explainer.shap_values(data_to_explain)).mean(axis=0)
 
 
 
@@ -890,7 +863,7 @@ class BorutaShap:
         This is an exact, two-sided test of the null hypothesis
         that the probability of success in a Bernoulli experiment is p
         """
-        return [binom_test(x, n=n, p=p, alternative=alternative) for x in array]
+        return [binom_test(int(x), n=n, p=p, alternative=alternative) for x in array]
 
 
     @staticmethod
@@ -920,7 +893,7 @@ class BorutaShap:
 
         alphacBon = alpha / float(n_tests)
         reject = pvals <= alphacBon
-        pvals_corrected = pvals * float(n_tests)
+        pvals_corrected = np.minimum(pvals * float(n_tests), 1.0)
         return reject, pvals_corrected
 
 
@@ -992,8 +965,13 @@ class BorutaShap:
 
         """
 
-        median_tentaive_values = self.history_x[self.tentative].median(axis=0).values
-        median_max_shadow = self.history_x['Max_Shadow'].median(axis=0)
+        # drop the initial placeholder row (now absent but keep guard)
+        history = self.history_x
+        if len(history) == 0:
+            raise RuntimeError("history_x not populated")
+
+        median_tentaive_values = history[self.tentative].median(axis=0).values
+        median_max_shadow      = history['Max_Shadow'].median(axis=0)
 
 
         filtered = median_tentaive_values > median_max_shadow
@@ -1080,7 +1058,7 @@ class BorutaShap:
 
         """
         # data from wide to long
-        data = self.history_x.iloc[1:]
+        data = self.history_x
         data['index'] = data.index
         data = pd.melt(data, id_vars='index', var_name='Methods')
 

@@ -50,6 +50,8 @@ X.head()
 Feature_Selector = BorutaShap(importance_measure='shap',
                               classification=False)
 
+# importance_measure accepts 'shap', 'perm' or 'gini' (case-insensitive)
+
 '''
 Sample: Boolean
 	if true then a rowise sample of the data will be used to calculate the feature importance values
@@ -108,6 +110,7 @@ model = XGBClassifier()
 Feature_Selector = BorutaShap(model=model,
                               importance_measure='shap',
                               classification=True)
+# importance_measure is case-insensitive
 
 Feature_Selector.fit(X=X, y=y, n_trials=100, sample=False,
             	     train_or_test = 'test', normalize=True,
