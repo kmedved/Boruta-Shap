@@ -6,7 +6,15 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.cluster import KMeans
 from sklearn.inspection import permutation_importance
 from scipy.sparse import issparse
-from scipy.stats import binom_test, ks_2samp
+from scipy.stats import ks_2samp
+# Provide backward compatibility for SciPy >=1.10
+try:
+    from scipy.stats import binom_test  # SciPy < 1.10
+except ImportError:  # SciPy >= 1.10
+    from scipy.stats import binomtest as _binomtest
+
+    def binom_test(x, n=None, p=0.5, alternative="two-sided"):
+        return _binomtest(x, n=n, p=p, alternative=alternative).pvalue
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 import random
