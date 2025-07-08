@@ -7,7 +7,7 @@ def readme():
 
 setup(
     name="BorutaShap",
-    version="1.0.14",
+    version="1.0.15",
     description="A feature selection algorithm.",
     long_description=readme(),
     long_description_content_type="text/markdown",
