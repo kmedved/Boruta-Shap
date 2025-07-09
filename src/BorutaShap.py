@@ -31,7 +31,7 @@ class BorutaShap:
 
     """
 
-    def __init__(self, model=None, importance_measure='Shap',
+    def __init__(self, model=None, importance_measure='shap',
                 classification=True, percentile=100, pvalue=0.05):
 
         """
@@ -58,8 +58,11 @@ class BorutaShap:
 
         """
 
-        self.importance_measure = importance_measure
-        self.importance_measure_lower = str(importance_measure).lower()
+        # store exactly once, always lower-case
+        canon = str(importance_measure).lower()
+        self.importance_measure = (
+            importance_measure if isinstance(importance_measure, str) and importance_measure == canon else canon
+        )
         self.percentile = percentile
         self.pvalue = pvalue
         self.classification = classification
@@ -152,8 +155,16 @@ class BorutaShap:
             if delim:
                 nested_params[key][sub_key] = value
             else:
-                setattr(self, key, value)
-                valid_params[key] = value
+                if key == "importance_measure":
+                    # always keep lower-case canonical
+                    canon = str(value).lower()
+                    self.importance_measure = (
+                        value if isinstance(value, str) and value == canon else canon
+                    )
+                    valid_params[key] = self.importance_measure
+                else:
+                    setattr(self, key, value)
+                    valid_params[key] = value
 
         for key, sub_params in nested_params.items():
             valid_params[key].set_params(**sub_params)
@@ -199,7 +210,7 @@ class BorutaShap:
         elif check_fit is False and check_predict_proba is False:
             raise AttributeError('Model must contain both the fit() and predict() methods')
 
-        elif check_feature_importance is False and self.importance_measure_lower == 'gini':
+        elif check_feature_importance is False and self.importance_measure == 'gini':
             raise AttributeError('Model must contain the feature_importances_ method to use Gini try Shap instead')
 
         else:
@@ -478,8 +489,16 @@ class BorutaShap:
         self.store_feature_importance()
         self.calculate_rejected_accepted_tentative(verbose=verbose)
 
-    def transform(self, X):
-        return self.Subset(self)
+        return self
+
+    def transform(self, X, tentative: bool = False):
+        """
+        Return X restricted to the accepted features (and optionally tentative ones).
+        This follows scikit-learn’s transformer convention: the *input* matrix is
+        transformed — we do **not** use the data stored during fitting.
+        """
+        cols = self.accepted + (list(self.tentative) if tentative else [])
+        return X.loc[:, cols]
         
     def calculate_rejected_accepted_tentative(self, verbose):
 
@@ -686,11 +705,11 @@ class BorutaShap:
         Returns:
             normalised array
         """
-        mean_value = np.mean(array)
-        std_value = np.std(array)
-        if std_value == 0:
-            return np.zeros_like(array, dtype=float)
-        return (array - mean_value) / std_value
+        arr = np.asarray(array, dtype=float)
+        std = arr.std()
+        if std == 0:
+            return np.zeros_like(arr)
+        return (arr - arr.mean()) / std
 
 
     def feature_importance(self, normalize):
@@ -715,7 +734,7 @@ class BorutaShap:
                 If no Importance measure was specified
         """
 
-        if self.importance_measure_lower == 'shap':
+        if self.importance_measure == 'shap':
 
             self.explain()
             vals = self.shap_values
@@ -726,10 +745,10 @@ class BorutaShap:
             X_feature_import = vals[:len(self.X.columns)]
             Shadow_feature_import = vals[len(self.X_shadow.columns):]
             
-        elif self.importance_measure_lower == 'perm':
+        elif self.importance_measure == 'perm':
 
             if self.classification:
-                num_classes = np.unique(self.y).size
+                num_classes = np.unique(np.asarray(self.y).ravel()).size
                 scoring = 'f1' if num_classes == 2 else 'f1_macro'
             else:
                 scoring = 'neg_root_mean_squared_error'
@@ -737,7 +756,7 @@ class BorutaShap:
             perm_result = permutation_importance(
                 self.model,
                 self.X_boruta,
-                self.y,
+                np.asarray(self.y).ravel(),
                 scoring=scoring,
                 n_repeats=10,
                 random_state=self.random_state
@@ -750,7 +769,7 @@ class BorutaShap:
             X_feature_import = perm_importances_[:len(self.X.columns)]
             Shadow_feature_import = perm_importances_[len(self.X.columns):]
 
-        elif self.importance_measure_lower == 'gini':
+        elif self.importance_measure == 'gini':
 
                 feature_importances_ =  np.abs(self.model.feature_importances_)
 
@@ -773,7 +792,10 @@ class BorutaShap:
         '''
         fits isloation forest to the dataset and gives an anomally score to every sample
         '''
-        clf = IsolationForest().fit(X, sample_weight = sample_weight)
+        try:
+            clf = IsolationForest().fit(X, sample_weight=sample_weight)
+        except TypeError:
+            clf = IsolationForest().fit(X)
         preds = clf.score_samples(X)
         return preds
 
@@ -994,9 +1016,7 @@ class BorutaShap:
 
 
     def Subset(self, tentative=False):
-        """
-        Returns the subset of desired features
-        """
+        """(DEPRECATED) Return stored dataset restricted to selected features."""
         if tentative:
             return self.starting_X[self.accepted + list(self.tentative)]
         else:
@@ -1060,7 +1080,7 @@ class BorutaShap:
         # data from wide to long
         data = self.history_x
         data['index'] = data.index
-        data = pd.melt(data, id_vars='index', var_name='Methods')
+        data = pd.melt(data, id_vars='index', var_name='Methods').copy()
 
         decision_mapper = self.create_mapping_of_features_to_attribute(maps=['Tentative','Rejected','Accepted', 'Shadow'])
         data['Decision'] = data['Methods'].map(decision_mapper)
@@ -1130,6 +1150,9 @@ class BorutaShap:
     @staticmethod
     def to_dictionary(list_one, list_two):
         return dict(zip(list_one, list_two))
+
+# Back-compat alias for the earlier misspelling
+BorutaShap.bonferroni_corrections = BorutaShap.bonferoni_corrections
 
 
 

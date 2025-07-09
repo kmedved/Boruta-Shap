@@ -51,3 +51,16 @@ def test_tentative_rough_fix_changes_state():
     after = len(fs.accepted) + len(fs.rejected)
     assert after >= before
 
+
+def test_importance_measure_sync():
+    fs = BorutaShap()
+    fs.set_params(importance_measure='gini')
+    assert fs.importance_measure == 'gini'
+
+
+def test_transform_respects_tentative_flag():
+    X, y = load_data('classification')
+    fs = BorutaShap().fit(X, y, n_trials=1, train_or_test='train', verbose=False)
+    assert set(fs.transform(X).columns) == set(fs.accepted)
+    assert set(fs.transform(X, tentative=True).columns) == set(fs.accepted + fs.tentative)
+
