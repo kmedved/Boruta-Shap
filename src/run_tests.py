@@ -15,9 +15,11 @@ def Test_Models(data_type, models):
 
         print('Testing: ' + str(key))
         # no model selected default is Random Forest, if classification is False it is a Regression problem
-        Feature_Selector = BorutaShap(model=value,
-                                        importance_measure='shap',
-                                        classification=True)
+        Feature_Selector = BorutaShap(
+            model=value,
+            importance_measure='shap',
+            classification=(data_type != 'regression')
+        )
 
         Feature_Selector.fit(X=X, y=y, n_trials=5, random_state=0, train_or_test = 'train')
 
